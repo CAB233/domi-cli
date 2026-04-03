@@ -67,6 +67,15 @@ domi-cli --config config.toml --entry cn --entry global
 domi-cli --geosite ./geosite.dat --base google --base microsoft --output ./rules.json --attr-filter "lacks:cn"
 ```
 
+## 查看属性标签
+
+```bash
+domi-cli list-attrs --geosite ./geosite.dat
+```
+
+- 输出 `geosite.dat` 中去重后的属性标签，每行一个。
+- 支持 `--config <FILE>`；需要时可配合 `--entry <NAME>` 从指定 entry 解析 geosite 配置。
+
 ## 命令行参数
 
 - `--config <FILE>`：配置文件路径
@@ -78,6 +87,13 @@ domi-cli --geosite ./geosite.dat --base google --base microsoft --output ./rules
 - `--set-version <N>`：覆盖配置里的 `version`，手动指定规则集中的 `version` 值
 - `--attr-filter <RULE>`：覆盖 `attr_filters`
 - `-V, --version`：输出版本号
+
+### `list-attrs` 子命令参数
+
+- `--config <FILE>`：配置文件路径
+- `--entry <NAME>`：从指定 entry 解析 geosite 配置
+- `--geosite-url <URL>`：覆盖 `geosite_url`
+- `--geosite <FILE>`：覆盖 `geosite_path`
 
 ## 覆盖优先级
 

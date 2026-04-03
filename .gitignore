@@ -1,5 +1,6 @@
+/.codex
 /ruleset
 /target
 
-.codex
 dlc.dat
+*.json

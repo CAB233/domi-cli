@@ -8,7 +8,5 @@ bases = ["geolocation-cn"]
 attr_filters = ["lacks:!cn", "lacks:ads"]
 output = "ruleset/geolocation-cn.json"
 
-["geolocation-!cn"]
-bases = ["geolocation-!cn"]
-attr_filters = ["lacks:cn", "lacks:ads"]
-output = "ruleset/geolocation-!cn.json"
+[ai]
+bases = ["anthropic", "xai"]

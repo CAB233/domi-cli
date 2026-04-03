@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use domi::{
     AttrFilter, Entries,
     geosite::proto::{GeoSiteList, domain},
@@ -16,13 +16,8 @@ use domi::{
 use prost::Message;
 use serde::Deserialize;
 
-#[derive(Debug, Parser)]
-#[command(name = "domi-cli")]
-#[command(
-    version,
-    about = "Convert geosite.dat into sing-box JSON rule-set files"
-)]
-struct Cli {
+#[derive(Debug, Args, Clone)]
+struct ConvertArgs {
     #[arg(long = "config")]
     config: Option<PathBuf>,
 
@@ -49,6 +44,40 @@ struct Cli {
     /// 属性过滤：has:cn / lacks:cn
     #[arg(long = "attr-filter")]
     attr_filters: Vec<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+struct ListAttrsArgs {
+    #[arg(long = "config")]
+    config: Option<PathBuf>,
+
+    #[arg(long = "entry")]
+    entry: Option<String>,
+
+    #[arg(long = "geosite-url")]
+    geosite_url: Option<String>,
+
+    #[arg(long = "geosite")]
+    geosite_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    ListAttrs(ListAttrsArgs),
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "domi-cli")]
+#[command(
+    version,
+    about = "Convert geosite.dat into sing-box JSON rule-set files"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    #[command(flatten)]
+    convert: ConvertArgs,
 }
 
 /// 一组可合并的配置字段。
@@ -93,13 +122,16 @@ enum OwnedAttrFilter {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let jobs = resolve_jobs(&cli)?;
-
-    for job in jobs {
-        run_one(job)?;
+    match &cli.command {
+        Some(Commands::ListAttrs(args)) => run_list_attrs(args),
+        None => {
+            let jobs = resolve_jobs(&cli.convert)?;
+            for job in jobs {
+                run_one(job)?;
+            }
+            Ok(())
+        }
     }
-
-    Ok(())
 }
 
 fn run_one(config: EffectiveConfig) -> Result<()> {
@@ -169,6 +201,12 @@ fn download_geosite(url: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn load_geosite(path: &Path) -> Result<GeoSiteList> {
+    let bytes =
+        fs::read(path).with_context(|| format!("读取 geosite 文件失败: {}", path.display()))?;
+    GeoSiteList::decode(bytes.as_slice()).context("geosite.dat protobuf 解码失败")
+}
+
 fn load_config(path: &Path) -> Result<ConfigFile> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
@@ -188,7 +226,7 @@ fn merge_scope(base: ConfigScope, overlay: ConfigScope) -> ConfigScope {
     }
 }
 
-fn apply_cli_override(mut scope: ConfigScope, cli: &Cli) -> ConfigScope {
+fn apply_convert_override(mut scope: ConfigScope, cli: &ConvertArgs) -> ConfigScope {
     if let Some(v) = &cli.geosite_url {
         scope.geosite_url = Some(v.clone());
     }
@@ -206,6 +244,20 @@ fn apply_cli_override(mut scope: ConfigScope, cli: &Cli) -> ConfigScope {
     }
     if !cli.attr_filters.is_empty() {
         scope.attr_filters = Some(cli.attr_filters.clone());
+    }
+    scope
+}
+
+fn apply_geosite_override(
+    mut scope: ConfigScope,
+    geosite_url: &Option<String>,
+    geosite_path: &Option<PathBuf>,
+) -> ConfigScope {
+    if let Some(v) = geosite_url {
+        scope.geosite_url = Some(v.clone());
+    }
+    if let Some(v) = geosite_path {
+        scope.geosite_path = Some(v.clone());
     }
     scope
 }
@@ -244,10 +296,10 @@ fn scope_to_effective(
 }
 
 /// 组装实际要执行的一组任务。
-fn resolve_jobs(cli: &Cli) -> Result<Vec<EffectiveConfig>> {
+fn resolve_jobs(cli: &ConvertArgs) -> Result<Vec<EffectiveConfig>> {
     // 模式 A：没有配置文件，直接走命令行单任务。
     if cli.config.is_none() {
-        let scope = apply_cli_override(ConfigScope::default(), cli);
+        let scope = apply_convert_override(ConfigScope::default(), cli);
         return Ok(vec![scope_to_effective(scope, None, false)?]);
     }
 
@@ -271,7 +323,7 @@ fn resolve_jobs(cli: &Cli) -> Result<Vec<EffectiveConfig>> {
                 .cloned()
                 .with_context(|| format!("配置文件中不存在 entry `{name}`"))?;
             let merged = merge_scope(global_scope.clone(), entry_scope);
-            let merged = apply_cli_override(merged, cli);
+            let merged = apply_convert_override(merged, cli);
             jobs.push(scope_to_effective(merged, Some(name.clone()), false)?);
         }
         return Ok(jobs);
@@ -285,11 +337,80 @@ fn resolve_jobs(cli: &Cli) -> Result<Vec<EffectiveConfig>> {
     jobs.reserve(cfg.entries.len());
     for (name, entry_scope) in cfg.entries {
         let merged = merge_scope(global_scope.clone(), entry_scope);
-        let merged = apply_cli_override(merged, cli);
+        let merged = apply_convert_override(merged, cli);
         jobs.push(scope_to_effective(merged, Some(name), true)?);
     }
 
     Ok(jobs)
+}
+
+fn resolve_geosite_source(
+    config_path: &Option<PathBuf>,
+    entry: &Option<String>,
+    geosite_url: &Option<String>,
+    geosite_path: &Option<PathBuf>,
+) -> Result<(Option<String>, PathBuf)> {
+    if config_path.is_none() {
+        let scope = apply_geosite_override(ConfigScope::default(), geosite_url, geosite_path);
+        let path = scope
+            .geosite_path
+            .context("缺少 --geosite 参数，或在配置文件里设置 geosite_path")?;
+        return Ok((scope.geosite_url, path));
+    }
+
+    let cfg = load_config(config_path.as_deref().unwrap())?;
+    let global_scope = cfg.config.unwrap_or_default();
+
+    let merged = if let Some(name) = entry {
+        let entry_scope = cfg
+            .entries
+            .get(name)
+            .cloned()
+            .with_context(|| format!("配置文件中不存在 entry `{name}`"))?;
+        merge_scope(global_scope, entry_scope)
+    } else {
+        global_scope
+    };
+
+    let merged = apply_geosite_override(merged, geosite_url, geosite_path);
+    let path = merged
+        .geosite_path
+        .context("缺少 --geosite 参数，或在配置文件里设置 geosite_path")?;
+
+    Ok((merged.geosite_url, path))
+}
+
+fn run_list_attrs(args: &ListAttrsArgs) -> Result<()> {
+    let (geosite_url, geosite_path) = resolve_geosite_source(
+        &args.config,
+        &args.entry,
+        &args.geosite_url,
+        &args.geosite_path,
+    )?;
+
+    if let Some(url) = &geosite_url {
+        download_geosite(url, &geosite_path)?;
+    }
+
+    let geosite = load_geosite(&geosite_path)?;
+    let mut attrs = BTreeSet::new();
+
+    for site in &geosite.entry {
+        for domain in &site.domain {
+            for attr in &domain.attribute {
+                let key = attr.key.trim();
+                if !key.is_empty() {
+                    attrs.insert(key.to_string());
+                }
+            }
+        }
+    }
+
+    for attr in attrs {
+        println!("{attr}");
+    }
+
+    Ok(())
 }
 
 /// 解析 `has:cn` / `lacks:cn` 这种参数。
