@@ -1,15 +1,41 @@
-# domi-cli 使用指南
+# domi-cli
 
-`domi-cli` 用于把 geosite 规则转换为 sing-box 的 JSON 格式规则集
+将 geodata 中域名规则转换为 sing-box JSON 格式规则集
 
-## 配置结构
+构建
+```bash
+cargo build --release
+```
 
-配置文件使用两层：
+使用示例
+```bash
+domi-cli --geosite ./geosite.dat --base google --base microsoft --output ./rules.json --attr-filter "lacks:cn"
+```
+
+## 使用命令行
+
+### 子命令
+
+- `list-attrs`：输出 `geosite.dat` 中去重后的属性标签
+
+### 命令参数
+
+- `--config <FILE>`：配置文件路径
+- `--entry <NAME>`：指定 entry（可重复）
+- `--geosite-url <URL>`：指定 geosite 下载链接
+- `--geosite <FILE>`：指定 geosite 保存路径
+- `--base <BASE>`：指定 `bases`（可重复）
+- `--output <FILE>`：文件输出路径
+- `--set-version <N>`：指定规则集中的 `version` 值
+- `--attr-filter <RULE>`：覆盖 `attr_filters`
+
+
+## 使用配置文件
+
 - `[__config__]`：全局默认配置
 - `[cn]` / `[global]` 等：entry（用户可自定义命名）
 
-每个 entry 对应一个规则任务和一个 JSON 输出文件。
-同一任务内如果配置了多个 `bases`，会默认深度合并成一个 rule（而不是生成多个分散 rule）。
+每个 entry 对应一个规则任务和一个 JSON 输出文件。同一任务内如果配置了多个 `bases`，会默认深度合并
 
 ```toml
 [__config__]
@@ -29,14 +55,12 @@ output = "./rules-global.json"
 ```
 
 字段说明：
-- `geosite_url`：下载链接（可选）。设置后会先下载，再读取本地文件
+- `geosite_url`：下载链接。设置后会先下载，再读取本地文件
 - `geosite_path`：下载保存路径，或本地 geosite 文件路径（必填）
 - `bases`：要导出的 geosite base 列表
 - `attr_filters`：属性过滤，格式 `has:xxx` / `lacks:xxx`
 - `version`：输出规则集 JSON 中的 `version` 字段，默认 `2`
 - `output`：JSON 输出路径
-
-## 运行方式
 
 ### 仅传递配置文件路径
 
@@ -59,50 +83,4 @@ domi-cli --config config.toml --entry cn
 domi-cli --config config.toml --entry cn --entry global
 ```
 
-- 此时仅执行 entry 内配置，可用于单独调试
-
-## 命令行模式
-
-```bash
-domi-cli --geosite ./geosite.dat --base google --base microsoft --output ./rules.json --attr-filter "lacks:cn"
-```
-
-## 查看属性标签
-
-```bash
-domi-cli list-attrs --geosite ./geosite.dat
-```
-
-- 输出 `geosite.dat` 中去重后的属性标签，每行一个。
-- 支持 `--config <FILE>`；需要时可配合 `--entry <NAME>` 从指定 entry 解析 geosite 配置。
-
-## 命令行参数
-
-- `--config <FILE>`：配置文件路径
-- `--entry <NAME>`：只生成指定 entry（可重复）
-- `--geosite-url <URL>`：覆盖 `geosite_url`
-- `--geosite <FILE>`：覆盖 `geosite_path`
-- `--base <BASE>`：覆盖 `bases`（可重复）
-- `-o, --output <FILE>`：覆盖 `output`
-- `--set-version <N>`：覆盖配置里的 `version`，手动指定规则集中的 `version` 值
-- `--attr-filter <RULE>`：覆盖 `attr_filters`
-- `-V, --version`：输出版本号
-
-### `list-attrs` 子命令参数
-
-- `--config <FILE>`：配置文件路径
-- `--entry <NAME>`：从指定 entry 解析 geosite 配置
-- `--geosite-url <URL>`：覆盖 `geosite_url`
-- `--geosite <FILE>`：覆盖 `geosite_path`
-
-## 覆盖优先级
-
-从高到低：
-1. 命令行参数
-2. entry（如 `[cn]`）
-3. `[__config__]`
-
-## 范围限制
-
-- 只支持域名规则 geodata
-- 只输出 sing-box 规则集 JSON
+此时仅执行 entry 内配置，可用于单独调试
