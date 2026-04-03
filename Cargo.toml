@@ -1,0 +1,14 @@
+[package]
+name = "domi-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+domi = { version = "0.1.0-alpha.24", features = ["prost"] }
+prost = "0.14"
+reqwest = { version = "0.13", features = ["blocking"] }
+serde = "1.0"
+serde_json = "1.0"
+toml = "1.1.2"

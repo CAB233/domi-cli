@@ -1,0 +1,14 @@
+[__config__]
+geosite_url = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+geosite_path = "dlc.dat"
+version = 2
+
+[geolocation-cn]
+bases = ["geolocation-cn"]
+attr_filters = ["lacks:!cn", "lacks:ads"]
+output = "ruleset/geolocation-cn.json"
+
+["geolocation-!cn"]
+bases = ["geolocation-!cn"]
+attr_filters = ["lacks:cn", "lacks:ads"]
+output = "ruleset/geolocation-!cn.json"
