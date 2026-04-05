@@ -1,86 +1,72 @@
 # domi-cli
 
-将 geodata 中域名规则转换为 sing-box JSON 格式规则集
+Convert geosite.dat domain rules to sing-box JSON rule-set format.
 
-构建
+## Build
+
 ```bash
 cargo build --release
 ```
 
-使用示例
-```bash
-domi-cli --geosite ./geosite.dat --base google --base microsoft --output ./rules.json --attr-filter "lacks:cn"
-```
+## Usage
 
-## 使用命令行
+### Configuration File
 
-### 子命令
-
-- `list-attrs`：输出 `geosite.dat` 中去重后的属性标签
-
-### 命令参数
-
-- `--config <FILE>`：配置文件路径
-- `--entry <NAME>`：指定 entry（可重复）
-- `--geosite-url <URL>`：指定 geosite 下载链接
-- `--geosite <FILE>`：指定 geosite 保存路径
-- `--base <BASE>`：指定 `bases`（可重复）
-- `--output <FILE>`：文件输出路径
-- `--set-version <N>`：指定规则集中的 `version` 值
-- `--attr-filter <RULE>`：覆盖 `attr_filters`
-
-
-## 使用配置文件
-
-- `[__config__]`：全局默认配置
-- `[cn]` / `[global]` 等：entry（用户可自定义命名）
-
-每个 entry 对应一个规则任务和一个 JSON 输出文件。同一任务内如果配置了多个 `bases`，会默认深度合并
+All settings are managed via a config file. Create a configuration file, such as `config.toml`:
 
 ```toml
 [__config__]
+# Global settings (version, geosite source)
+# version: rule-set version (default: 2)
+# geosite_url: download URL (optional)
+# geosite_path: local file path (required)
 geosite_url = "https://example.com/geosite.dat"
-geosite_path = "./data/geosite.dat"
+geosite_path = "geosite.dat"
 version = 2
 
-[cn]
-bases = ["google", "openai"]
-attr_filters = ["has:cn", "lacks:ads"]
-output = "./rules-cn.json"
-
-[global]
-bases = ["google", "openai", "anthropic"]
+[entry-name]
+# Entry-specific settings (can override global geosite_url/geosite_path)
+# geosite_url: override global (optional)
+# geosite_path: override global (optional)
+# bases: list of geosite bases to export (required)
+# output: output JSON path (optional, defaults to <entry-name>.json)
+# attr_filters: attribute filters like "has:cn" / "lacks:ads" (optional)
+bases = ["geolocation-cn"]
 attr_filters = ["lacks:cn"]
-output = "./rules-global.json"
+output = "rules.json"
 ```
 
-字段说明：
-- `geosite_url`：下载链接。设置后会先下载，再读取本地文件
-- `geosite_path`：下载保存路径，或本地 geosite 文件路径（必填）
-- `bases`：要导出的 geosite base 列表
-- `attr_filters`：属性过滤，格式 `has:xxx` / `lacks:xxx`
-- `version`：输出规则集 JSON 中的 `version` 字段，默认 `2`
-- `output`：JSON 输出路径
+#### Config Rules
 
-### 仅传递配置文件路径
+- `[__config__]` - Global config (only these fields: `version`, `geosite_url`, `geosite_path`)
+  - `version`: JSON output version, defaults to `2`
+  - `geosite_url`: download URL
+  - `geosite_path`: local file path
+- Entry `geosite_url` + `geosite_path`: download before each run
+- Entry `geosite_path` only: read from local file, no download
+- Entry can override global `geosite_url` / `geosite_path` for different sources
+
+### Run All Entries
 
 ```bash
-domi-cli --config </path/to/your/config>
+domi-cli --config config.toml
 ```
 
-- 会遍历配置里的所有 entry。
-- 若某个 entry 没写 `output`，默认输出 `<entry>.json`（例如 `cn.json`）。
-
-### 传递 entry 参数
+### Run Specific Entry(s)
 
 ```bash
 domi-cli --config config.toml --entry cn
-```
-
-或
-
-```bash
 domi-cli --config config.toml --entry cn --entry global
 ```
 
-此时仅执行 entry 内配置，可用于单独调试
+### Subcommand: list-attrs
+
+List unique attribute tags from geosite.dat:
+
+```bash
+domi-cli list-attrs path/to/geosite.dat
+```
+
+## Acknowledgments
+
+Inspired by [chise0713/domi](https://github.com/chise0713/domi)
