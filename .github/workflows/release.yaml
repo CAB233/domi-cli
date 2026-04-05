@@ -31,7 +31,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Prepare release asset
         run: |
@@ -51,7 +51,6 @@ jobs:
     name: Publish release
     runs-on: ubuntu-24.04
     needs: build
-
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
