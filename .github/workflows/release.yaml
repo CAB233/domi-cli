@@ -39,11 +39,10 @@ jobs:
 
       - name: Prepare release asset
         run: |
-          tag="${GITHUB_REF_NAME}"
-          src="target/${{ matrix.target }}/release/domi-cli"
-          asset="domi-cli-${{ matrix.target }}"
           mkdir -p dist
-          cp "$src" "dist/$asset"
+          src="target/${{ matrix.target }}/release/domi-cli"
+          llvm-strip -s "$src" -o "dist/domi-cli-${{ matrix.target }}"
+          llvm-strip --only-keep-debug "$src" -o "dist/domi-cli-${{ matrix.target }}-debug"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
