@@ -153,7 +153,8 @@ fn run_one(config: EffectiveConfig) -> Result<()> {
     let json = build_rule_set_json(rules, config.version)?;
 
     if let Some(output) = &config.output {
-        fs::write(output, &json)
+        let json_with_eol = format!("{}\n", json);
+        fs::write(output, json_with_eol)
             .with_context(|| format!("Failed to write JSON file: {}", output.display()))?;
     } else {
         if let Some(name) = &config.entry_name {
