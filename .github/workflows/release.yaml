@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -31,7 +32,10 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: |
+          sudo apt update -y
+          sudo apt install protobuf-compiler
+          cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Prepare release asset
         run: |
