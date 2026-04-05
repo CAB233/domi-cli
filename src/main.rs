@@ -1,6 +1,5 @@
 use std::{
-    collections::HashMap,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -65,10 +64,17 @@ struct GlobalConfig {
 /// Entry config fields.
 #[derive(Debug, Default, Clone, Deserialize)]
 struct EntryConfig {
+    /// Entry to depend on (chain processing)
+    depends: Option<String>,
+    /// Override geosite_url from global
     geosite_url: Option<String>,
+    /// Override geosite_path from global
     geosite_path: Option<PathBuf>,
+    /// List of geosite bases to export
     bases: Option<Vec<String>>,
+    /// Output JSON path
     output: Option<PathBuf>,
+    /// Attribute filters: "has:xxx" / "lacks:xxx"
     attr_filters: Option<Vec<String>>,
 }
 
@@ -108,15 +114,17 @@ fn main() -> Result<()> {
         Some(Commands::ListAttrs(args)) => run_list_attrs(args),
         None => {
             let jobs = resolve_jobs(&cli.convert)?;
+            let mut prev_rules: Option<Vec<Rule>> = None;
+
             for job in jobs {
-                run_one(job)?;
+                prev_rules = run_one(job, prev_rules)?;
             }
             Ok(())
         }
     }
 }
 
-fn run_one(config: EffectiveConfig) -> Result<()> {
+fn run_one(config: EffectiveConfig, prev_rules: Option<Vec<Rule>>) -> Result<Option<Vec<Rule>>> {
     // Download geosite if both url and path are configured.
     if config.download_enabled {
         download_geosite(config.geosite_url.as_ref().unwrap(), &config.geosite_path)?;
@@ -150,7 +158,13 @@ fn run_one(config: EffectiveConfig) -> Result<()> {
     }
 
     // Multiple bases are merged into one rule by key. Use BTree* for stable output.
-    let json = build_rule_set_json(rules, config.version)?;
+    let final_rules = if let Some(prev) = prev_rules {
+        merge_rules(prev, rules)
+    } else {
+        rules
+    };
+
+    let json = build_rule_set_json(&final_rules, config.version)?;
 
     if let Some(output) = &config.output {
         let json_with_eol = format!("{}\n", json);
@@ -163,7 +177,63 @@ fn run_one(config: EffectiveConfig) -> Result<()> {
         println!("{json}");
     }
 
-    Ok(())
+    Ok(Some(final_rules))
+}
+
+/// Merge previous rules with new rules (chain processing).
+fn merge_rules(prev: Vec<Rule>, new: Vec<Rule>) -> Vec<Rule> {
+    if prev.is_empty() {
+        return new;
+    }
+    if new.is_empty() {
+        return prev;
+    }
+
+    // Merge all rules into one by combining their fields.
+    let mut merged = Rule::default();
+
+    for rules in [prev, new] {
+        for rule in rules {
+            if let Some(v) = rule.domain_suffix {
+                let existing = merged.domain_suffix.take();
+                let mut combined: Vec<Box<str>> =
+                    existing.map(|b| b.into_vec()).unwrap_or_default();
+                combined.extend(v.into_vec());
+                combined.sort();
+                combined.dedup();
+                merged.domain_suffix = Some(combined.into_boxed_slice());
+            }
+            if let Some(v) = rule.domain {
+                let existing = merged.domain.take();
+                let mut combined: Vec<Box<str>> =
+                    existing.map(|b| b.into_vec()).unwrap_or_default();
+                combined.extend(v.into_vec());
+                combined.sort();
+                combined.dedup();
+                merged.domain = Some(combined.into_boxed_slice());
+            }
+            if let Some(v) = rule.domain_keyword {
+                let existing = merged.domain_keyword.take();
+                let mut combined: Vec<Box<str>> =
+                    existing.map(|b| b.into_vec()).unwrap_or_default();
+                combined.extend(v.into_vec());
+                combined.sort();
+                combined.dedup();
+                merged.domain_keyword = Some(combined.into_boxed_slice());
+            }
+            if let Some(v) = rule.domain_regex {
+                let existing = merged.domain_regex.take();
+                let mut combined: Vec<Box<str>> =
+                    existing.map(|b| b.into_vec()).unwrap_or_default();
+                combined.extend(v.into_vec());
+                combined.sort();
+                combined.dedup();
+                merged.domain_regex = Some(combined.into_boxed_slice());
+            }
+        }
+    }
+
+    vec![merged]
 }
 
 fn download_geosite(url: &str, path: &Path) -> Result<()> {
@@ -268,35 +338,115 @@ fn resolve_jobs(cli: &ConvertArgs) -> Result<Vec<EffectiveConfig>> {
     let cfg = load_config(config_path)?;
     let global = cfg.global.clone();
 
-    let mut jobs = Vec::new();
-
-    // Mode A: explicit --entry, only generate selected entries.
-    if !cli.entries.is_empty() {
-        jobs.reserve(cli.entries.len());
-        for name in &cli.entries {
-            let entry = cfg
-                .entries
-                .get(name)
-                .cloned()
-                .with_context(|| format!("Entry `{name}` not found in config file"))?;
-            let job = entry_to_effective(name.clone(), &entry, &global, false)?;
-            jobs.push(job);
+    // Build job list based on mode.
+    let mut job_entries: Vec<(String, EntryConfig)> = if !cli.entries.is_empty() {
+        cli.entries
+            .iter()
+            .map(|name| {
+                let entry = cfg
+                    .entries
+                    .get(name)
+                    .cloned()
+                    .with_context(|| format!("Entry `{name}` not found in config file"))?;
+                Ok((name.clone(), entry))
+            })
+            .collect::<Result<_>>()?
+    } else {
+        if cfg.entries.is_empty() {
+            bail!("No entries found in config file. Add entries like [cn], [global], etc.")
         }
-        return Ok(jobs);
-    }
+        cfg.entries.into_iter().collect()
+    };
 
-    // Mode B: only --config, generate all entries.
-    if cfg.entries.is_empty() {
-        bail!("No entries found in config file. Add entries like [cn], [global], etc.")
-    }
+    // Sort by depends order (topological sort).
+    sort_by_depends(&mut job_entries)?;
 
-    jobs.reserve(cfg.entries.len());
-    for (name, entry) in cfg.entries {
+    // Convert to EffectiveConfig.
+    let mut jobs = Vec::with_capacity(job_entries.len());
+    for (name, entry) in job_entries {
         let job = entry_to_effective(name, &entry, &global, true)?;
         jobs.push(job);
     }
 
     Ok(jobs)
+}
+
+/// Sort entries by depends order (topological sort).
+fn sort_by_depends(entries: &mut [(String, EntryConfig)]) -> Result<()> {
+    let count = entries.len();
+    if count <= 1 {
+        return Ok(());
+    }
+
+    // Build dependency map.
+    let depends_map: HashMap<String, Option<String>> = entries
+        .iter()
+        .map(|(n, e)| (n.clone(), e.depends.clone()))
+        .collect();
+
+    // Detect circular dependency and build in-degree map.
+    let mut in_degree: HashMap<String, usize> =
+        entries.iter().map(|(n, _)| (n.clone(), 0)).collect();
+
+    for (name, entry) in entries.iter() {
+        if let Some(dep) = &entry.depends {
+            // Check if dep exists.
+            if !depends_map.contains_key(dep) {
+                bail!("Entry `{}` depends on non-existent entry `{}`", name, dep);
+            }
+            // Check for circular dependency.
+            let mut visited = HashSet::new();
+            let mut current = dep.clone();
+            while let Some(next_dep) = depends_map.get(&current).and_then(|d| d.clone()) {
+                if next_dep == *name {
+                    bail!(
+                        "Circular dependency detected: {} -> {} -> {}",
+                        name,
+                        dep,
+                        next_dep
+                    );
+                }
+                if visited.contains(&next_dep) {
+                    break;
+                }
+                visited.insert(current.clone());
+                current = next_dep;
+            }
+            // Increment in-degree of the dependent (the one that has depends).
+            *in_degree.get_mut(name).unwrap() += 1;
+        }
+    }
+
+    // Kahn's algorithm.
+    let names: Vec<String> = entries.iter().map(|(n, _)| n.clone()).collect();
+    let mut queue: Vec<String> = names
+        .iter()
+        .filter(|n| in_degree[*n] == 0)
+        .cloned()
+        .collect();
+    let mut sorted = Vec::with_capacity(count);
+
+    while let Some(node) = queue.pop() {
+        sorted.push(node.clone());
+        for (name, entry) in entries.iter() {
+            // If name depends on node, reduce name's in-degree after node is processed.
+            if entry.depends.as_ref() == Some(&node) {
+                let deg = in_degree.get_mut(name).unwrap();
+                *deg -= 1;
+                if *deg == 0 {
+                    queue.push(name.clone());
+                }
+            }
+        }
+    }
+
+    if sorted.len() != count {
+        bail!("Circular dependency detected in entries");
+    }
+
+    // Reorder entries by sorted order.
+    entries.sort_by_key(|(n, _)| sorted.iter().position(|s| s == n).unwrap());
+    Ok(())
 }
 
 fn run_list_attrs(args: &ListAttrsArgs) -> Result<()> {
@@ -392,8 +542,8 @@ fn build_domi_text_for_base(geosite: &GeoSiteList, base: &str) -> Result<String>
     Ok(lines.join("\n"))
 }
 
-fn build_rule_set_json(rules: Vec<Rule>, version: u8) -> Result<String> {
-    let merged_rule = merge_rules_by_json_keys(&rules)?;
+fn build_rule_set_json(rules: &[Rule], version: u8) -> Result<String> {
+    let merged_rule = merge_rules_by_json_keys(rules)?;
     let mut root = serde_json::Map::new();
     root.insert("version".to_string(), serde_json::Value::from(version));
     root.insert(

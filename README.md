@@ -26,6 +26,7 @@ version = 2
 
 [entry-name]
 # Entry-specific settings (can override global geosite_url/geosite_path)
+# depends: entry to depend on for chain processing (optional)
 # geosite_url: override global (optional)
 # geosite_path: override global (optional)
 # bases: list of geosite bases to export (required)
@@ -45,6 +46,27 @@ output = "rules.json"
 - Entry `geosite_url` + `geosite_path`: download before each run
 - Entry `geosite_path` only: read from local file, no download
 - Entry can override global `geosite_url` / `geosite_path` for different sources
+- `depends` field: chain processing, entry B will merge with entry A's result
+
+#### Chain Processing Example
+
+```toml
+[base]
+bases = ["geolocation-cn"]
+output = "base.json"
+
+[filter-cn]
+depends = "base"
+attr_filters = ["has:cn"]
+output = "cn.json"
+
+[filter-global]
+depends = "base"
+attr_filters = ["lacks:cn"]
+output = "global.json"
+```
+
+The processing order will be: `base` → `filter-cn`, `filter-global`
 
 ### Run All Entries
 
