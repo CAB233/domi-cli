@@ -23,42 +23,13 @@ struct ConvertArgs {
 
     #[arg(long = "entry")]
     entries: Vec<String>,
-
-    #[arg(long = "geosite-url")]
-    geosite_url: Option<String>,
-
-    #[arg(long = "geosite")]
-    geosite_path: Option<PathBuf>,
-
-    #[arg(long = "base")]
-    bases: Vec<String>,
-
-    /// 输出 JSON 路径；不传则打印到 stdout
-    #[arg(short = 'o', long = "output")]
-    output: Option<PathBuf>,
-
-    /// rule-set 版本号（默认 2）
-    #[arg(long = "set-version")]
-    set_version: Option<u8>,
-
-    /// 属性过滤：has:cn / lacks:cn
-    #[arg(long = "attr-filter")]
-    attr_filters: Vec<String>,
 }
 
 #[derive(Debug, Args, Clone)]
 struct ListAttrsArgs {
-    #[arg(long = "config")]
-    config: Option<PathBuf>,
-
-    #[arg(long = "entry")]
-    entry: Option<String>,
-
-    #[arg(long = "geosite-url")]
-    geosite_url: Option<String>,
-
-    #[arg(long = "geosite")]
-    geosite_path: Option<PathBuf>,
+    /// geosite.dat 文件路径
+    #[arg(index = 1)]
+    geosite: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -179,11 +150,11 @@ fn run_one(config: EffectiveConfig) -> Result<()> {
 }
 
 fn download_geosite(url: &str, path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("创建 geosite 目录失败: {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("创建 geosite 目录失败: {}", parent.display()))?;
     }
 
     let response = reqwest::blocking::get(url)
@@ -226,40 +197,8 @@ fn merge_scope(base: ConfigScope, overlay: ConfigScope) -> ConfigScope {
     }
 }
 
-fn apply_convert_override(mut scope: ConfigScope, cli: &ConvertArgs) -> ConfigScope {
-    if let Some(v) = &cli.geosite_url {
-        scope.geosite_url = Some(v.clone());
-    }
-    if let Some(v) = &cli.geosite_path {
-        scope.geosite_path = Some(v.clone());
-    }
-    if !cli.bases.is_empty() {
-        scope.bases = Some(cli.bases.clone());
-    }
-    if let Some(v) = &cli.output {
-        scope.output = Some(v.clone());
-    }
-    if let Some(v) = cli.set_version {
-        scope.set_version = Some(v);
-    }
-    if !cli.attr_filters.is_empty() {
-        scope.attr_filters = Some(cli.attr_filters.clone());
-    }
-    scope
-}
-
-fn apply_geosite_override(
-    mut scope: ConfigScope,
-    geosite_url: &Option<String>,
-    geosite_path: &Option<PathBuf>,
-) -> ConfigScope {
-    if let Some(v) = geosite_url {
-        scope.geosite_url = Some(v.clone());
-    }
-    if let Some(v) = geosite_path {
-        scope.geosite_path = Some(v.clone());
-    }
-    scope
+fn apply_convert_override(_scope: ConfigScope, _cli: &ConvertArgs) -> ConfigScope {
+    ConfigScope::default()
 }
 
 fn scope_to_effective(
@@ -297,23 +236,17 @@ fn scope_to_effective(
 
 /// 组装实际要执行的一组任务。
 fn resolve_jobs(cli: &ConvertArgs) -> Result<Vec<EffectiveConfig>> {
-    // 模式 A：没有配置文件，直接走命令行单任务。
-    if cli.config.is_none() {
-        let scope = apply_convert_override(ConfigScope::default(), cli);
-        return Ok(vec![scope_to_effective(scope, None, false)?]);
-    }
+    let config_path = cli
+        .config
+        .as_ref()
+        .context("缺少 --config 参数：请指定配置文件")?;
 
-    let cfg = load_config(cli.config.as_deref().unwrap())?;
+    let cfg = load_config(config_path)?;
     let global_scope = cfg.config.unwrap_or_default();
-
-    // 防止多 entry 被同一个 CLI output 覆盖。
-    if cli.entries.len() > 1 && cli.output.is_some() {
-        bail!("同时指定多个 --entry 时，不能再用单个 --output 覆盖")
-    }
 
     let mut jobs = Vec::new();
 
-    // 模式 B：明确指定 --entry，只生成选中的 entry。
+    // 模式 A：明确指定 --entry，只生成选中的 entry。
     if !cli.entries.is_empty() {
         jobs.reserve(cli.entries.len());
         for name in &cli.entries {
@@ -329,7 +262,7 @@ fn resolve_jobs(cli: &ConvertArgs) -> Result<Vec<EffectiveConfig>> {
         return Ok(jobs);
     }
 
-    // 模式 C：只有 --config，生成全部 entry。
+    // 模式 B：只有 --config，生成全部 entry。
     if cfg.entries.is_empty() {
         bail!("配置文件中没有可用 entry。请添加如 [cn]、[global] 这类表")
     }
@@ -344,55 +277,8 @@ fn resolve_jobs(cli: &ConvertArgs) -> Result<Vec<EffectiveConfig>> {
     Ok(jobs)
 }
 
-fn resolve_geosite_source(
-    config_path: &Option<PathBuf>,
-    entry: &Option<String>,
-    geosite_url: &Option<String>,
-    geosite_path: &Option<PathBuf>,
-) -> Result<(Option<String>, PathBuf)> {
-    if config_path.is_none() {
-        let scope = apply_geosite_override(ConfigScope::default(), geosite_url, geosite_path);
-        let path = scope
-            .geosite_path
-            .context("缺少 --geosite 参数，或在配置文件里设置 geosite_path")?;
-        return Ok((scope.geosite_url, path));
-    }
-
-    let cfg = load_config(config_path.as_deref().unwrap())?;
-    let global_scope = cfg.config.unwrap_or_default();
-
-    let merged = if let Some(name) = entry {
-        let entry_scope = cfg
-            .entries
-            .get(name)
-            .cloned()
-            .with_context(|| format!("配置文件中不存在 entry `{name}`"))?;
-        merge_scope(global_scope, entry_scope)
-    } else {
-        global_scope
-    };
-
-    let merged = apply_geosite_override(merged, geosite_url, geosite_path);
-    let path = merged
-        .geosite_path
-        .context("缺少 --geosite 参数，或在配置文件里设置 geosite_path")?;
-
-    Ok((merged.geosite_url, path))
-}
-
 fn run_list_attrs(args: &ListAttrsArgs) -> Result<()> {
-    let (geosite_url, geosite_path) = resolve_geosite_source(
-        &args.config,
-        &args.entry,
-        &args.geosite_url,
-        &args.geosite_path,
-    )?;
-
-    if let Some(url) = &geosite_url {
-        download_geosite(url, &geosite_path)?;
-    }
-
-    let geosite = load_geosite(&geosite_path)?;
+    let geosite = load_geosite(&args.geosite)?;
     let mut attrs = BTreeSet::new();
 
     for site in &geosite.entry {
