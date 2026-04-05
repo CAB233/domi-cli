@@ -2,5 +2,6 @@
 /ruleset
 /target
 
-dlc.dat
+AGENTS.md
+*.dat
 *.json
