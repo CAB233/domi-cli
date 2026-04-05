@@ -54,27 +54,34 @@ struct Cli {
     convert: ConvertArgs,
 }
 
-/// A group of mergeable config fields.
+/// Global config fields (only for [__config__]).
 #[derive(Debug, Default, Clone, Deserialize)]
-struct ConfigScope {
+struct GlobalConfig {
+    version: Option<u8>,
+    geosite_url: Option<String>,
+    geosite_path: Option<PathBuf>,
+}
+
+/// Entry config fields.
+#[derive(Debug, Default, Clone, Deserialize)]
+struct EntryConfig {
     geosite_url: Option<String>,
     geosite_path: Option<PathBuf>,
     bases: Option<Vec<String>>,
     output: Option<PathBuf>,
-    set_version: Option<u8>,
     attr_filters: Option<Vec<String>>,
 }
 
 /// Config file structure:
-/// - [__config__] for global defaults
-/// - other tables are entries
+/// - [__config__] for global defaults (version, geosite_url, geosite_path)
+/// - other tables are entries (bases, output, attr_filters, etc.)
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
     #[serde(rename = "__config__")]
-    config: Option<ConfigScope>,
+    global: Option<GlobalConfig>,
 
     #[serde(flatten)]
-    entries: HashMap<String, ConfigScope>,
+    entries: HashMap<String, EntryConfig>,
 }
 
 #[derive(Debug)]
@@ -82,9 +89,10 @@ struct EffectiveConfig {
     entry_name: Option<String>,
     geosite_url: Option<String>,
     geosite_path: PathBuf,
+    download_enabled: bool,
     bases: Vec<String>,
     output: Option<PathBuf>,
-    set_version: u8,
+    version: u8,
     attr_filters: Vec<String>,
 }
 
@@ -109,9 +117,9 @@ fn main() -> Result<()> {
 }
 
 fn run_one(config: EffectiveConfig) -> Result<()> {
-    // If geosite_url is provided, download to geosite_path first.
-    if let Some(url) = &config.geosite_url {
-        download_geosite(url, &config.geosite_path)?;
+    // Download geosite if both url and path are configured.
+    if config.download_enabled {
+        download_geosite(config.geosite_url.as_ref().unwrap(), &config.geosite_path)?;
     }
 
     let bytes = fs::read(&config.geosite_path).with_context(|| {
@@ -142,7 +150,7 @@ fn run_one(config: EffectiveConfig) -> Result<()> {
     }
 
     // Multiple bases are merged into one rule by key. Use BTree* for stable output.
-    let json = build_rule_set_json(rules, config.set_version)?;
+    let json = build_rule_set_json(rules, config.version)?;
 
     if let Some(output) = &config.output {
         fs::write(output, &json)
@@ -196,51 +204,56 @@ fn load_config(path: &Path) -> Result<ConfigFile> {
     Ok(parsed)
 }
 
-fn merge_scope(base: ConfigScope, overlay: ConfigScope) -> ConfigScope {
-    ConfigScope {
-        geosite_url: overlay.geosite_url.or(base.geosite_url),
-        geosite_path: overlay.geosite_path.or(base.geosite_path),
-        bases: overlay.bases.or(base.bases),
-        output: overlay.output.or(base.output),
-        set_version: overlay.set_version.or(base.set_version),
-        attr_filters: overlay.attr_filters.or(base.attr_filters),
-    }
+fn merge_entry_with_global(
+    entry: &EntryConfig,
+    global: &Option<GlobalConfig>,
+) -> (Option<String>, Option<PathBuf>, bool) {
+    let global = match global {
+        Some(g) => g,
+        None => return (None, None, false),
+    };
+
+    let url = entry.geosite_url.clone().or(global.geosite_url.clone());
+    let path = entry.geosite_path.clone().or(global.geosite_path.clone());
+
+    let download_enabled = url.is_some() && path.is_some();
+
+    (url, path, download_enabled)
 }
 
-fn apply_convert_override(_scope: ConfigScope, _cli: &ConvertArgs) -> ConfigScope {
-    ConfigScope::default()
-}
-
-fn scope_to_effective(
-    scope: ConfigScope,
-    entry_name: Option<String>,
-    auto_output_by_entry: bool,
+fn entry_to_effective(
+    entry_name: String,
+    entry: &EntryConfig,
+    global: &Option<GlobalConfig>,
+    auto_output: bool,
 ) -> Result<EffectiveConfig> {
-    let geosite_path = scope
-        .geosite_path
-        .context("Missing geosite_path: set in config file")?;
+    let (geosite_url, geosite_path, download_enabled) = merge_entry_with_global(entry, global);
 
-    let bases = scope.bases.unwrap_or_default();
+    let geosite_path = geosite_path.context("Missing geosite_path: set in config file")?;
+
+    let bases = entry.bases.clone().unwrap_or_default();
     if bases.is_empty() {
-        bail!("Missing bases: set in config file as bases = [...]");
+        bail!("Missing bases in entry `{}`: set bases = [...]", entry_name);
     }
 
-    let output = scope.output.or_else(|| {
-        auto_output_by_entry.then(|| {
-            entry_name
-                .as_ref()
-                .map(|name| PathBuf::from(format!("{name}.json")))
-        })?
-    });
+    let output = entry
+        .output
+        .clone()
+        .or_else(|| auto_output.then(|| PathBuf::from(format!("{}.json", entry_name))));
+
+    let version = global.as_ref().and_then(|g| g.version).unwrap_or(2);
+
+    let attr_filters = entry.attr_filters.clone().unwrap_or_default();
 
     Ok(EffectiveConfig {
-        entry_name,
-        geosite_url: scope.geosite_url,
+        entry_name: Some(entry_name),
+        geosite_url,
         geosite_path,
+        download_enabled,
         bases,
         output,
-        set_version: scope.set_version.unwrap_or(2),
-        attr_filters: scope.attr_filters.unwrap_or_default(),
+        version,
+        attr_filters,
     })
 }
 
@@ -252,7 +265,7 @@ fn resolve_jobs(cli: &ConvertArgs) -> Result<Vec<EffectiveConfig>> {
         .context("Missing --config: please specify a config file")?;
 
     let cfg = load_config(config_path)?;
-    let global_scope = cfg.config.unwrap_or_default();
+    let global = cfg.global.clone();
 
     let mut jobs = Vec::new();
 
@@ -260,14 +273,13 @@ fn resolve_jobs(cli: &ConvertArgs) -> Result<Vec<EffectiveConfig>> {
     if !cli.entries.is_empty() {
         jobs.reserve(cli.entries.len());
         for name in &cli.entries {
-            let entry_scope = cfg
+            let entry = cfg
                 .entries
                 .get(name)
                 .cloned()
                 .with_context(|| format!("Entry `{name}` not found in config file"))?;
-            let merged = merge_scope(global_scope.clone(), entry_scope);
-            let merged = apply_convert_override(merged, cli);
-            jobs.push(scope_to_effective(merged, Some(name.clone()), false)?);
+            let job = entry_to_effective(name.clone(), &entry, &global, false)?;
+            jobs.push(job);
         }
         return Ok(jobs);
     }
@@ -278,10 +290,9 @@ fn resolve_jobs(cli: &ConvertArgs) -> Result<Vec<EffectiveConfig>> {
     }
 
     jobs.reserve(cfg.entries.len());
-    for (name, entry_scope) in cfg.entries {
-        let merged = merge_scope(global_scope.clone(), entry_scope);
-        let merged = apply_convert_override(merged, cli);
-        jobs.push(scope_to_effective(merged, Some(name), true)?);
+    for (name, entry) in cfg.entries {
+        let job = entry_to_effective(name, &entry, &global, true)?;
+        jobs.push(job);
     }
 
     Ok(jobs)
