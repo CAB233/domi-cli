@@ -18,17 +18,17 @@ All settings are managed via a config file. Create a configuration file, such as
 [__config__]
 # Global settings (version, geosite source)
 # version: rule-set version (default: 2)
-# geosite_url: download URL (optional)
-# geosite_path: local file path (required)
-geosite_url = "https://example.com/geosite.dat"
-geosite_path = "geosite.dat"
+# url: download URL (optional)
+# input: local file path (required)
+url = "https://example.com/geosite.dat"
+input = "geosite.dat"
 version = 2
 
 [entry-name]
-# Entry-specific settings (can override global geosite_url/geosite_path)
+# Entry-specific settings (can override global url/input)
 # depends: entry to depend on for chain processing (optional)
-# geosite_url: override global (optional)
-# geosite_path: override global (optional)
+# url: override global (optional)
+# input: override global (optional)
 # bases: list of geosite bases to export (required)
 # output: output JSON path (optional, defaults to <entry-name>.json)
 # attr_filters: attribute filters like "has:cn" / "lacks:ads" (optional)
@@ -39,13 +39,13 @@ output = "rules.json"
 
 #### Config Rules
 
-- `[__config__]` - Global config (only these fields: `version`, `geosite_url`, `geosite_path`)
+- `[__config__]` - Global config (only these fields: `version`, `url`, `input`)
   - `version`: JSON output version, defaults to `2`
-  - `geosite_url`: download URL
-  - `geosite_path`: local file path
-- Entry `geosite_url` + `geosite_path`: download before each run
-- Entry `geosite_path` only: read from local file, no download
-- Entry can override global `geosite_url` / `geosite_path` for different sources
+  - `url`: download URL
+  - `input`: local file path
+- Entry `url` + `input`: download before each run
+- Entry `input` only: read from local file, no download
+- Entry can override global `url` / `input` for different sources
 - `depends` field: chain processing, entry B will merge with entry A's result
 
 #### Chain Processing Example

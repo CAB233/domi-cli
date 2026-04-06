@@ -57,8 +57,8 @@ struct Cli {
 #[derive(Debug, Default, Clone, Deserialize)]
 struct GlobalConfig {
     version: Option<u8>,
-    geosite_url: Option<String>,
-    geosite_path: Option<PathBuf>,
+    url: Option<String>,
+    input: Option<PathBuf>,
 }
 
 /// Entry config fields.
@@ -66,10 +66,10 @@ struct GlobalConfig {
 struct EntryConfig {
     /// Entry to depend on (chain processing)
     depends: Option<String>,
-    /// Override geosite_url from global
-    geosite_url: Option<String>,
-    /// Override geosite_path from global
-    geosite_path: Option<PathBuf>,
+    /// Override url from global
+    url: Option<String>,
+    /// Override input from global
+    input: Option<PathBuf>,
     /// List of geosite bases to export
     bases: Option<Vec<String>>,
     /// Output JSON path
@@ -79,7 +79,7 @@ struct EntryConfig {
 }
 
 /// Config file structure:
-/// - [__config__] for global defaults (version, geosite_url, geosite_path)
+/// - [__config__] for global defaults (version, url, input)
 /// - other tables are entries (bases, output, attr_filters, etc.)
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
@@ -93,8 +93,8 @@ struct ConfigFile {
 #[derive(Debug)]
 struct EffectiveConfig {
     entry_name: Option<String>,
-    geosite_url: Option<String>,
-    geosite_path: PathBuf,
+    url: Option<String>,
+    input: PathBuf,
     download_enabled: bool,
     bases: Vec<String>,
     output: Option<PathBuf>,
@@ -127,13 +127,13 @@ fn main() -> Result<()> {
 fn run_one(config: EffectiveConfig, prev_rules: Option<Vec<Rule>>) -> Result<Option<Vec<Rule>>> {
     // Download geosite if both url and path are configured.
     if config.download_enabled {
-        download_geosite(config.geosite_url.as_ref().unwrap(), &config.geosite_path)?;
+        download_geosite(config.url.as_ref().unwrap(), &config.input)?;
     }
 
-    let bytes = fs::read(&config.geosite_path).with_context(|| {
+    let bytes = fs::read(&config.input).with_context(|| {
         format!(
             "Failed to read geosite file: {}",
-            config.geosite_path.display()
+            config.input.display()
         )
     })?;
 
@@ -284,8 +284,8 @@ fn merge_entry_with_global(
         None => return (None, None, false),
     };
 
-    let url = entry.geosite_url.clone().or(global.geosite_url.clone());
-    let path = entry.geosite_path.clone().or(global.geosite_path.clone());
+    let url = entry.url.clone().or(global.url.clone());
+    let path = entry.input.clone().or(global.input.clone());
 
     let download_enabled = url.is_some() && path.is_some();
 
@@ -298,9 +298,9 @@ fn entry_to_effective(
     global: &Option<GlobalConfig>,
     auto_output: bool,
 ) -> Result<EffectiveConfig> {
-    let (geosite_url, geosite_path, download_enabled) = merge_entry_with_global(entry, global);
+    let (url, input, download_enabled) = merge_entry_with_global(entry, global);
 
-    let geosite_path = geosite_path.context("Missing geosite_path: set in config file")?;
+    let input = input.context("Missing input: set in config file")?;
 
     let bases = entry.bases.clone().unwrap_or_default();
     if bases.is_empty() {
@@ -318,8 +318,8 @@ fn entry_to_effective(
 
     Ok(EffectiveConfig {
         entry_name: Some(entry_name),
-        geosite_url,
-        geosite_path,
+        url,
+        input,
         download_enabled,
         bases,
         output,
