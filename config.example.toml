@@ -11,7 +11,7 @@ output = "/dev/null"
 ["another-!cn"]
 depends = "geolocation-!cn"
 bases = ["google"]
-output = "ruleset/another-!cn.json"
+output = "geolocation-!cn.json"
 
 [ai]
 url = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
