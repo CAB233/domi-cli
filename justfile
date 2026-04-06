@@ -3,7 +3,7 @@ build:
 
 test: build
     mkdir ruleset || true
-    cd ruleset && ../target/release/domi-cli --config ../config.example.toml
+    cd ruleset && ../target/debug/domi-cli --config ../config.example.toml
 
 build-release:
     cargo build --release --locked

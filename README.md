@@ -26,11 +26,12 @@ version = 2
 
 [entry-name]
 # Entry-specific settings (can override global url/input)
-# depends: entry to depend on for chain processing (optional)
+# depends: entries to depend on for merging (optional, array)
 # url: override global (optional)
 # input: override global (optional)
 # bases: list of geosite bases to export (required)
 # output: output JSON path (optional, defaults to <entry-name>.json)
+# internal: don't output file, only used for depends (optional, boolean)
 # attr_filters: attribute filters like "has:cn" / "lacks:ads" (optional)
 bases = ["geolocation-cn"]
 attr_filters = ["lacks:cn"]
@@ -46,27 +47,29 @@ output = "rules.json"
 - Entry `url` + `input`: download before each run
 - Entry `input` only: read from local file, no download
 - Entry can override global `url` / `input` for different sources
-- `depends` field: chain processing, entry B will merge with entry A's result
+- `depends` field: multiple entries supported, array format `depends = ["A", "B"]`
+- `internal` field: if true, no output file, but can be referenced by depends
+- `output` and `internal` cannot both be specified
 
-#### Chain Processing Example
+#### Dependency Example
 
 ```toml
-[base]
+[cn]
 bases = ["geolocation-cn"]
-output = "base.json"
+internal = true
 
-[filter-cn]
-depends = "base"
-attr_filters = ["has:cn"]
-output = "cn.json"
-
-[filter-global]
-depends = "base"
+[global]
+bases = ["geolocation-!cn"]
 attr_filters = ["lacks:cn"]
 output = "global.json"
+
+[merged]
+depends = ["cn", "global"]
+bases = ["private"]
+output = "merged.json"
 ```
 
-The processing order will be: `base` → `filter-cn`, `filter-global`
+The processing order will be topologically sorted. `merged` will merge results from `cn` and `global` first, then merge with its own `bases`.
 
 ### Run All Entries
 
@@ -81,7 +84,7 @@ domi-cli --config config.toml --entry cn
 domi-cli --config config.toml --entry cn --entry global
 ```
 
-### Subcommand: list-attrs
+### Subcommand
 
 List unique attribute tags from geosite.dat:
 

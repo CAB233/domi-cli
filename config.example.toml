@@ -1,19 +1,27 @@
 [__config__]
-url = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+#url = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
 input = "dlc.dat"
 version = 2
 
 ["geolocation-!cn"]
 bases = ["geolocation-!cn"]
 attr_filters = ["lacks:cn", "lacks:ads"]
-output = "/dev/null"
+internal = true
+
+["microsoft@cn"]
+bases = ["microsoft"]
+attr_filters = ["has:cn"]
+internal = true
 
 ["another-!cn"]
-depends = "geolocation-!cn"
+depends = ["geolocation-!cn", "microsoft@cn"]
 bases = ["google"]
 output = "geolocation-!cn.json"
 
+[private]
+bases = ["private"]
+
 [ai]
-url = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+#url = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
 input = "geosite.dat"
 bases = ["anthropic", "xai"]

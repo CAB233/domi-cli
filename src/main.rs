@@ -64,8 +64,8 @@ struct GlobalConfig {
 /// Entry config fields.
 #[derive(Debug, Default, Clone, Deserialize)]
 struct EntryConfig {
-    /// Entry to depend on (chain processing)
-    depends: Option<String>,
+    /// Entries to depend on (chain processing)
+    depends: Option<Vec<String>>,
     /// Override url from global
     url: Option<String>,
     /// Override input from global
@@ -76,6 +76,9 @@ struct EntryConfig {
     output: Option<PathBuf>,
     /// Attribute filters: "has:xxx" / "lacks:xxx"
     attr_filters: Option<Vec<String>>,
+    /// Internal entry (no output file)
+    #[serde(default)]
+    internal: bool,
 }
 
 /// Config file structure:
@@ -90,9 +93,10 @@ struct ConfigFile {
     entries: HashMap<String, EntryConfig>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct EffectiveConfig {
     entry_name: Option<String>,
+    depends: Vec<String>,
     url: Option<String>,
     input: PathBuf,
     download_enabled: bool,
@@ -100,6 +104,7 @@ struct EffectiveConfig {
     output: Option<PathBuf>,
     version: u8,
     attr_filters: Vec<String>,
+    internal: bool,
 }
 
 #[derive(Debug)]
@@ -114,13 +119,60 @@ fn main() -> Result<()> {
         Some(Commands::ListAttrs(args)) => run_list_attrs(args),
         None => {
             let jobs = resolve_jobs(&cli.convert)?;
-            let mut prev_rules: Option<Vec<Rule>> = None;
+            let mut rules_map: HashMap<String, Vec<Rule>> = HashMap::new();
 
-            for job in jobs {
-                prev_rules = run_one(job, prev_rules)?;
+            for job in jobs.iter() {
+                let depends_rules = collect_depends_rules(&job.depends, &rules_map)?;
+                let self_rules = run_one(job.clone(), None)?;
+
+                let final_rules = match (self_rules, depends_rules) {
+                    (Some(self_r), Some(deps_r)) => merge_rules(self_r, deps_r),
+                    (Some(self_r), None) => self_r,
+                    (None, Some(deps_r)) => deps_r,
+                    (None, None) => Vec::new(),
+                };
+
+                if let Some(name) = &job.entry_name {
+                    rules_map.insert(name.clone(), final_rules.clone());
+                }
+
+                if !job.internal {
+                    let json = build_rule_set_json(&final_rules, job.version)?;
+                    if let Some(output) = &job.output {
+                        let json_with_eol = format!("{}\n", json);
+                        fs::write(output, json_with_eol).with_context(|| {
+                            format!("Failed to write JSON file: {}", output.display())
+                        })?;
+                    } else {
+                        println!("{json}");
+                    }
+                }
             }
             Ok(())
         }
+    }
+}
+
+fn collect_depends_rules(
+    depends: &[String],
+    rules_map: &HashMap<String, Vec<Rule>>,
+) -> Result<Option<Vec<Rule>>> {
+    if depends.is_empty() {
+        return Ok(None);
+    }
+
+    let mut all_rules = Vec::new();
+    for dep in depends {
+        let rules = rules_map
+            .get(dep)
+            .with_context(|| format!("Entry `{}` not found in depends", dep))?;
+        all_rules.extend_from_slice(rules);
+    }
+
+    if all_rules.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(all_rules))
     }
 }
 
@@ -130,12 +182,8 @@ fn run_one(config: EffectiveConfig, prev_rules: Option<Vec<Rule>>) -> Result<Opt
         download_geosite(config.url.as_ref().unwrap(), &config.input)?;
     }
 
-    let bytes = fs::read(&config.input).with_context(|| {
-        format!(
-            "Failed to read geosite file: {}",
-            config.input.display()
-        )
-    })?;
+    let bytes = fs::read(&config.input)
+        .with_context(|| format!("Failed to read geosite file: {}", config.input.display()))?;
 
     let geosite =
         GeoSiteList::decode(bytes.as_slice()).context("geosite.dat protobuf decode failed")?;
@@ -166,15 +214,11 @@ fn run_one(config: EffectiveConfig, prev_rules: Option<Vec<Rule>>) -> Result<Opt
 
     let json = build_rule_set_json(&final_rules, config.version)?;
 
+    // Output handled by main function, this just returns rules
     if let Some(output) = &config.output {
         let json_with_eol = format!("{}\n", json);
         fs::write(output, json_with_eol)
             .with_context(|| format!("Failed to write JSON file: {}", output.display()))?;
-    } else {
-        if let Some(name) = &config.entry_name {
-            println!("# entry: {name}");
-        }
-        println!("{json}");
     }
 
     Ok(Some(final_rules))
@@ -307,17 +351,31 @@ fn entry_to_effective(
         bail!("Missing bases in entry `{}`: set bases = [...]", entry_name);
     }
 
-    let output = entry
-        .output
-        .clone()
-        .or_else(|| auto_output.then(|| PathBuf::from(format!("{}.json", entry_name))));
+    let has_explicit_output = entry.output.is_some();
+    let output = entry.output.clone();
+
+    if entry.internal && has_explicit_output {
+        bail!(
+            "Entry `{}`: `output` and `internal` cannot both be specified",
+            entry_name
+        );
+    }
+
+    let internal = entry.internal;
+    let output = if internal {
+        None
+    } else {
+        output.or_else(|| auto_output.then(|| PathBuf::from(format!("{}.json", entry_name))))
+    };
 
     let version = global.as_ref().and_then(|g| g.version).unwrap_or(2);
 
     let attr_filters = entry.attr_filters.clone().unwrap_or_default();
+    let depends = entry.depends.clone().unwrap_or_default();
 
     Ok(EffectiveConfig {
         entry_name: Some(entry_name),
+        depends,
         url,
         input,
         download_enabled,
@@ -325,6 +383,7 @@ fn entry_to_effective(
         output,
         version,
         attr_filters,
+        internal,
     })
 }
 
@@ -378,46 +437,43 @@ fn sort_by_depends(entries: &mut [(String, EntryConfig)]) -> Result<()> {
         return Ok(());
     }
 
-    // Build dependency map.
-    let depends_map: HashMap<String, Option<String>> = entries
-        .iter()
-        .map(|(n, e)| (n.clone(), e.depends.clone()))
-        .collect();
-
-    // Detect circular dependency and build in-degree map.
-    let mut in_degree: HashMap<String, usize> =
-        entries.iter().map(|(n, _)| (n.clone(), 0)).collect();
+    let all_names: Vec<String> = entries.iter().map(|(n, _)| n.clone()).collect();
 
     for (name, entry) in entries.iter() {
-        if let Some(dep) = &entry.depends {
-            // Check if dep exists.
-            if !depends_map.contains_key(dep) {
-                bail!("Entry `{}` depends on non-existent entry `{}`", name, dep);
-            }
-            // Check for circular dependency.
-            let mut visited = HashSet::new();
-            let mut current = dep.clone();
-            while let Some(next_dep) = depends_map.get(&current).and_then(|d| d.clone()) {
-                if next_dep == *name {
-                    bail!(
-                        "Circular dependency detected: {} -> {} -> {}",
-                        name,
-                        dep,
-                        next_dep
-                    );
+        if let Some(deps) = &entry.depends {
+            for dep in deps {
+                if !all_names.contains(dep) {
+                    bail!("Entry `{}` depends on non-existent entry `{}`", name, dep);
                 }
-                if visited.contains(&next_dep) {
-                    break;
-                }
-                visited.insert(current.clone());
-                current = next_dep;
             }
-            // Increment in-degree of the dependent (the one that has depends).
-            *in_degree.get_mut(name).unwrap() += 1;
         }
     }
 
-    // Kahn's algorithm.
+    let depends_map: HashMap<String, Vec<String>> = entries
+        .iter()
+        .map(|(n, e)| (n.clone(), e.depends.clone().unwrap_or_default()))
+        .collect();
+
+    let mut in_degree: HashMap<String, usize> =
+        entries.iter().map(|(n, _)| (n.clone(), 0)).collect();
+
+    for (name, deps) in &depends_map {
+        if let Some(deg) = in_degree.get_mut(name) {
+            *deg += deps.len();
+        }
+    }
+
+    for (name, deps) in &depends_map {
+        if detect_cycle(name, deps, &depends_map, &mut HashSet::new()) {
+            bail!(
+                "Circular dependency detected: {} depends on {:?}",
+                name,
+                deps
+            );
+        }
+    }
+
+    let empty_deps: Vec<String> = Vec::new();
     let names: Vec<String> = entries.iter().map(|(n, _)| n.clone()).collect();
     let mut queue: Vec<String> = names
         .iter()
@@ -428,9 +484,9 @@ fn sort_by_depends(entries: &mut [(String, EntryConfig)]) -> Result<()> {
 
     while let Some(node) = queue.pop() {
         sorted.push(node.clone());
-        for (name, entry) in entries.iter() {
-            // If name depends on node, reduce name's in-degree after node is processed.
-            if entry.depends.as_ref() == Some(&node) {
+        for (name, deps) in entries.iter().map(|(n, e)| (n, &e.depends)) {
+            let deps = deps.as_deref().unwrap_or(&empty_deps);
+            if deps.contains(&node) {
                 let deg = in_degree.get_mut(name).unwrap();
                 *deg -= 1;
                 if *deg == 0 {
@@ -444,9 +500,33 @@ fn sort_by_depends(entries: &mut [(String, EntryConfig)]) -> Result<()> {
         bail!("Circular dependency detected in entries");
     }
 
-    // Reorder entries by sorted order.
     entries.sort_by_key(|(n, _)| sorted.iter().position(|s| s == n).unwrap());
     Ok(())
+}
+
+fn detect_cycle(
+    name: &str,
+    deps: &[String],
+    depends_map: &HashMap<String, Vec<String>>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    for start in deps {
+        let mut current = start.as_str();
+        while let Some(next_deps) = depends_map.get(current) {
+            if next_deps.iter().any(|d| d == name) {
+                return true;
+            }
+            if visited.contains(current) {
+                break;
+            }
+            visited.insert(current.to_string());
+            if next_deps.is_empty() {
+                break;
+            }
+            current = &next_deps[0];
+        }
+    }
+    false
 }
 
 fn run_list_attrs(args: &ListAttrsArgs) -> Result<()> {
